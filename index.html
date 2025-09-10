@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Bay Conference — Scouting Kiosk (Section-Safe Parsing)</title>
+<style>
+  :root { --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --card:#ffffff; --bg:#f9fafb; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif; }
+  .wrap { max-width: 1200px; margin: 28px auto; padding: 0 16px; }
+  h1 { margin:0 0 6px 0; font-size:28px; letter-spacing:.2px; }
+  .sub { color:var(--muted); margin: 0 0 12px 0; }
+  .row { display:grid; grid-template-columns: 1.15fr .85fr; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .drop { border:2px dashed #8aa2ff; border-radius:12px; padding:18px; text-align:center; color:#1f2a44; background:#f4f7ff; }
+  .drop.drag { background:#e8efff; }
+  .controls { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:10px; }
+  .field { display:flex; flex-direction:column; gap:6px; min-width:210px; }
+  label { font-size:12px; color:var(--muted); }
+  select, input[type="number"] { padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+  .btn { padding:9px 12px; border:1px solid var(--line); border-radius:10px; background:#fff; cursor:pointer; }
+  .btn:hover { background:#f3f4f6; }
+  .diag { font-size:12px; background:#fff; border:1px dashed #cbd5e1; padding:10px; border-radius:10px; color:#374151; }
+  .small { font-size:12px; color:var(--muted); }
+  .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
+  .kpi { border:1px solid var(--line); border-radius:12px; padding:12px; background:#fff; }
+  .kpi h3 { margin:0 0 6px 0; font-size:16px; }
+  .kpi table { width:100%; border-collapse:collapse; }
+  .kpi td { padding:4px 0; font-size:14px; }
+  .kpi td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  table.tot { width:100%; border-collapse:collapse; }
+  table.tot td { padding:4px 0; font-size:13px; }
+  table.tot td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  .section-title { margin:8px 0 8px 0; font-size:18px; }
+  .ptable-wrap { overflow:auto; border:1px solid var(--line); border-radius:12px; }
+  table.ptable { width:100%; border-collapse:separate; border-spacing:0; }
+  .ptable th, .ptable td { padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; white-space:nowrap; }
+  .ptable th { background:#f8fafc; position:sticky; top:0; text-align:left; cursor:pointer; }
+  .export-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .right { text-align:right; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Scouting Kiosk (Team + Per-Player KPIs)</h1>
+  <p class="sub">Drop a GameChanger export (CSV/TSV) or a prior JSON. We parse safely by section → calculate KPIs (team + per-player) → optional JSON/CSV exports. All local.</p>
+
+  <div class="row">
+    <div class="card">
+      <div id="drop" class="drop">
+        <div><strong>Drop CSV/TSV/JSON here</strong> or <input id="file" type="file" accept=".csv,.tsv,.txt,.json"></div>
+        <div class="controls">
+          <div class="field">
+            <label>Output JSON Mode</label>
+            <select id="mode">
+              <option value="lean">Lean (core stats only)</option>
+              <option value="full">Full (preserve all GC columns)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Perspective</label>
+            <select id="perspective">
+              <option value="opponent">Opponent (no manual PO)</option>
+              <option value="our">Our Team (allow manual Productive Outs)</option>
+            </select>
+          </div>
+          <div class="field" id="poWrap" style="display:none;">
+            <label>Manual Productive Outs (our team only)</label>
+            <input id="poManual" type="number" min="0" step="1" value="0">
+          </div>
+          <div class="field">
+            <label>ERA Basis</label>
+            <select id="eraBasis">
+              <option value="7" selected>Per 7 (HS)</option>
+              <option value="9">Per 9</option>
+            </select>
+          </div>
+          <button id="downloadJson" class="btn" type="button" disabled>Download JSON</button>
+        </div>
+      </div>
+      <div id="diag" class="diag" style="margin-top:12px;">No file loaded.</div>
+      <div class="section-title">Detected Header (CSV)</div>
+      <div id="headers" class="small mono">—</div>
+      <div class="section-title">Preview (first 2 players)</div>
+      <div id="preview" class="small mono">—</div>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <div class="kpi">
+          <h3>Hitting KPIs — Team</h3>
+          <table id="kpiHit"></table>
+        </div>
+        <div class="kpi">
+          <h3>Pitching KPIs — Team</h3>
+          <table id="kpiPit"></table>
+        </div>
+        <div class="kpi">
+          <h3>Fielding KPIs — Team</h3>
+          <table id="kpiFld"></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>Team Totals</h2>
+    <div class="grid">
+      <div>
+        <div class="section-title">Hitting Totals</div>
+        <table class="tot" id="totHit"></table>
+      </div>
+      <div>
+        <div class="section-title">Pitching Totals</div>
+        <table class="tot" id="totPit"></table>
+      </div>
+      <div>
+        <div class="section-title">Fielding Totals</div>
+        <table class="tot" id="totFld"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>Per-Player KPIs</h2>
+
+    <div class="export-row">
+      <button id="exportHitCSV" class="btn" type="button" disabled>Export Hitting KPIs (CSV)</button>
+      <button id="exportPitCSV" class="btn" type="button" disabled>Export Pitching KPIs (CSV)</button>
+      <button id="exportFldCSV" class="btn" type="button" disabled>Export Fielding KPIs (CSV)</button>
+    </div>
+
+    <div class="section-title">Hitting (click headers to sort)</div>
+    <div class="ptable-wrap"><table class="ptable" id="tblHitKPIs"></table></div>
+
+    <div class="section-title" style="margin-top:12px;">Pitching (click headers to sort)</div>
+    <div class="ptable-wrap"><table class="ptable" id="tblPitKPIs"></table></div>
+
+    <div class="section-title" style="margin-top:12px;">Fielding (click headers to sort)</div>
+    <div class="ptable-wrap"><table class="ptable" id="tblFldKPIs"></table></div>
+  </div>
+</div>
+
+<script>
+/* -------- helpers -------- */
+function detectDelimiter(line){ const c={",":(line.match(/,/g)||[]).length,";":(line.match(/;/g)||[]).length,"\\t":(line.match(/\t/g)||[]).length,"|":(line.match(/\|/g)||[]).length}; let best=",",max=-1; for(const k in c){ if(c[k]>max){max=c[k]; best=k;} } return best==="\\t"?"\\t":best; }
+function split(line, delim){
+  if (delim==="\\t") return line.split("\\t");
+  if (delim===";") return line.split(";");
+  if (delim==="|") return line.split("|");
+  const out=[]; let cur="", q=false;
+  for(let i=0;i<line.length;i++){ const ch=line[i], nx=line[i+1];
+    if(q){ if(ch==='\"'&&nx==='\"'){ cur+='\"'; i++; } else if(ch==='\"'){ q=false; } else { cur+=ch; } }
+    else { if(ch===','){ out.push(cur); cur=''; } else if(ch==='\"'){ q=true; } else { cur+=ch; } }
+  }
+  out.push(cur); return out;
+}
+function findHeaderLine(lines){ let bi=-1,bs=-1,bd=","; for(let i=0;i<Math.min(lines.length,180);i++){ const ln=lines[i]; const sc=(ln.match(/[,;\t|]/g)||[]).length; const looks=/(^|[,;\t|])Number([,;\t|])/.test(ln)&&/([,;\t|])PA([,;\t|])/.test(ln); if(looks||sc>bs){ bi=i; bs=sc; bd=detectDelimiter(ln); if(looks) break; } } return {index:bi,delim:bd}; }
+function parseCSV(text){ const raw=text.split(/\r?\n/).filter(l=>l.trim().length>0); const hdr=findHeaderLine(raw); if(hdr.index<0) return null; const header=split(raw[hdr.index], hdr.delim).map(s=>s.trim()); const rows=[]; for(let i=hdr.index+1;i<raw.length;i++){ const cells=split(raw[i], hdr.delim); if(!cells||cells.length<=1) continue; rows.push(cells); } return {header,rows,delim:hdr.delim}; }
+function numeric(v){ const s=String(v??"").trim(); if(!s) return 0; const n=Number(s.replace(/[%\u00A0,]/g,"").replace(/[^0-9.\-]/g,"")); return isFinite(n)?n:0; }
+function fmt(x,d=3){ return isFinite(x)? Number(x).toFixed(d) : "—"; }
+function setTable(el,pairs){ document.getElementById(el).innerHTML=pairs.map(([k,v])=>`<tr><td>${k}</td><td class="right">${v}</td></tr>`).join(""); }
+
+/* -------- column groups -------- */
+const BATTING_KEYS=["GP","PA","AB","AVG","OBP","OPS","SLG","H","1B","2B","3B","HR","RBI","R","BB","SO","K-L","HBP","SAC","SF","ROE","FC","SB","SB%","CS","PIK","QAB","QAB%","PA/BB","BB/K","C%","HHB","LD%","FB%","GB%","BABIP","BA/RISP","LOB","2OUTRBI","XBH","TB","PS","PS/PA","2S+3","2S+3%","6","6%","AB/HR","GIDP","GITP","CI"];
+const PITCHING_KEYS=["IP","GP","GS","BF","#P","W","L","SV","SVO","BS","SV%","H","R","ER","BB","SO","K-L","HBP","ERA","WHIP","LOB","BK","PIK","CS","SB","SB%","WP","BAA","MPHFB","MPHCT","MPHCB","MPHSL","MPHCH","MPHOS","P/IP","P/BF","<3%","LOO","1ST2OUT","123INN","<13","FIP","S%","FPS%","FPSO%","FPSW%","FPSH%","BB/INN","0BBINN","BBS","LOBB","LOBBS","SM%","K/BF","K/BB","WEAK%","HHB%","GO/AO","HR","LD%","FB%","GB%","BABIP","BA/RISP","FB","FBS","FBS%","FBSW%","FBSM%","CT","CTS","CTS%","CTSW%","CTSM%","CB","CBS","CBS%","CBSW%","CBSM%","SL","SLS","SLS%","SLSW%","SLSM%","CH","CHS","CHS%","CHSW%","CHSM%","OS","OSS","OSS%","OSSW%","OSSM%"];
+const FIELDING_KEYS=["TC","A","PO","FPCT","E","DP","TP","INN","PB","SB","SB-ATT","CS","CS%","PIK","CI"];
+
+/* -------- section-safe mapping -------- */
+// find the column ranges for Batting / Pitching / Fielding
+function findSectionBounds(header){
+  const idxFirst = Math.max(header.indexOf("First"), 2);     // after names
+  const pitchStart = header.indexOf("IP", idxFirst + 1);     // first pitching marker
+  const fieldStart = (pitchStart >= 0) ? header.indexOf("TC", pitchStart + 1) : -1;
+
+  const batStart = idxFirst + 1;
+  const batEnd   = (pitchStart >= 0 ? pitchStart : header.length) - 1;
+
+  const pitStart = (pitchStart >= 0 ? pitchStart : header.length);
+  const pitEnd   = (fieldStart >= 0 ? fieldStart : header.length) - 1;
+
+  const fldStart = (fieldStart >= 0 ? fieldStart : header.length);
+  const fldEnd   = header.length - 1;
+
+  return {batStart, batEnd, pitStart, pitEnd, fldStart, fldEnd};
+}
+function indexInRange(header, key, start, end){
+  for(let i=Math.max(0,start); i<=Math.min(end, header.length-1); i++){
+    if(header[i] === key) return i;
+  }
+  return -1;
+}
+
+function normalizePlayersFromCSV(table){
+  const H={}; table.header.forEach((h,i)=>H[h]=i);
+  const {batStart,batEnd,pitStart,pitEnd,fldStart,fldEnd} = findSectionBounds(table.header);
+  const players=[];
+  for(const row of table.rows){
+    const base={
+      number:(H["Number"]!=null? row[H["Number"]]: "").toString().trim(),
+      last:(H["Last"]!=null? row[H["Last"]]: "").toString().trim(),
+      first:(H["First"]!=null? row[H["First"]]: "").toString().trim(),
+      batting:{}, pitching:{}, fielding:{}, _raw:{} };
+    table.header.forEach((h,i)=> base._raw[h]=row[i]);
+
+    for(const k of BATTING_KEYS){ const idx=indexInRange(table.header,k,batStart,batEnd); if(idx>=0) base.batting[k]=row[idx]; }
+    for(const k of PITCHING_KEYS){ const idx=indexInRange(table.header,k,pitStart,pitEnd); if(idx>=0) base.pitching[k]=row[idx]; }
+    for(const k of FIELDING_KEYS){ const idx=indexInRange(table.header,k,fldStart,fldEnd); if(idx>=0) base.fielding[k]=row[idx]; }
+
+    if(base.number||base.last||base.first) players.push(base);
+  }
+  return players;
+}
+function normalizePlayersFromJSON(obj){
+  if(Array.isArray(obj.players)) return obj.players;
+  if(Array.isArray(obj.rows)&&Array.isArray(obj.header)){ return normalizePlayersFromCSV({header:obj.header,rows:obj.rows}); }
+  return [];
+}
+
+/* -------- exports (lean/full) -------- */
+function toLean(players){
+  return players.map(p=>({ number:p.number,last:p.last,first:p.first,
+    batting:{ PA:numeric(p.batting.PA),AB:numeric(p.batting.AB),H:numeric(p.batting.H),"2B":numeric(p.batting["2B"]),"3B":numeric(p.batting["3B"]),HR:numeric(p.batting.HR),BB:numeric(p.batting.BB),SO:numeric(p.batting.SO),R:numeric(p.batting.R),RBI:numeric(p.batting.RBI),SB:numeric(p.batting.SB),CS:numeric(p.batting.CS),HBP:numeric(p.batting.HBP),SF:numeric(p.batting.SF),SAC:numeric(p.batting.SAC)},
+    pitching:{ IP:numeric(p.pitching.IP),R:numeric(p.pitching.R),ER:numeric(p.pitching.ER),H:numeric(p.pitching.H),BB:numeric(p.pitching.BB),SO:numeric(p.pitching.SO),HR:numeric(p.pitching.HR),HBP:numeric(p.pitching.HBP),WP:numeric(p.pitching.WP),BK:numeric(p.pitching.BK) },
+    fielding:{ TC:numeric(p.fielding.TC),A:numeric(p.fielding.A),PO:numeric(p.fielding.PO),E:numeric(p.fielding.E),DP:numeric(p.fielding.DP),TP:numeric(p.fielding.TP) }}));
+}
+function toFull(players){ return players.map(p=>({ number:p.number,last:p.last,first:p.first, batting:p.batting,pitching:p.pitching,fielding:p.fielding, raw:p._raw })); }
+
+/* -------- team calc + per-player KPIs -------- */
+function sum(players,section,key){ let t=0; for(const p of players){ t+=numeric(p[section]?.[key]); } return t; }
+function calcTeam(players,eraBasis,poManual){
+  const AB=sum(players,"batting","AB"),H=sum(players,"batting","H"),BB=sum(players,"batting","BB"),SO=sum(players,"batting","SO"),
+        HBP=sum(players,"batting","HBP"),SF=sum(players,"batting","SF"),SAC=sum(players,"batting","SAC"),
+        _2B=sum(players,"batting","2B"),_3B=sum(players,"batting","3B"),HR=sum(players,"batting","HR"),
+        SB=sum(players,"batting","SB"),CS=sum(players,"batting","CS"),
+        RBI=sum(players,"batting","RBI"),R=sum(players,"batting","R");
+  let PA=sum(players,"batting","PA"); if(!PA) PA=AB+BB+HBP+SF+SAC;
+  const _1B=Math.max(0,H-_2B-_3B-HR);
+  const AVG=AB>0?H/AB:NaN, OBP=(AB+BB+HBP+SF)>0?(H+BB+HBP)/(AB+BB+HBP+SF):NaN, SLG=AB>0?(_1B+2*_2B+3*_3B+4*HR)/AB:NaN, OPS=isFinite(OBP)&&isFinite(SLG)?OBP+SLG:NaN, ISO=isFinite(SLG-AVG)?SLG-AVG:NaN;
+  const BBpct=PA>0?BB/PA:NaN, Kpct=PA>0?SO/PA:NaN, SBApct=(H+BB+HBP)>0?(SB+CS)/(H+BB+HBP):NaN, POlite=PA>0?(SAC+SF)/PA:NaN, POenh=PA>0?(SAC+SF+poManual)/PA:NaN;
+
+  const IP=sum(players,"pitching","IP"), ERp=sum(players,"pitching","ER"), Rp=sum(players,"pitching","R"), Hpit=sum(players,"pitching","H"), BBpit=sum(players,"pitching","BB"), SOpit=sum(players,"pitching","SO"), HRpit=sum(players,"pitching","HR"), HBPpit=sum(players,"pitching","HBP"), WP=sum(players,"pitching","WP"), BK=sum(players,"pitching","BK");
+  const ERAx=IP>0?(ERp*eraBasis)/IP:NaN, RAx=IP>0?(Rp*eraBasis)/IP:NaN, WHIP=IP>0?(BBpit+Hpit)/IP:NaN, Kper=IP>0?(SOpit*eraBasis)/IP:NaN, BBper=IP>0?(BBpit*eraBasis)/IP:NaN, KBB=BBpit>0?(SOpit/BBpit):(SOpit>0?Infinity:NaN);
+
+  const TC=sum(players,"fielding","TC"),A=sum(players,"fielding","A"),PO=sum(players,"fielding","PO"),E=sum(players,"fielding","E"),DP=sum(players,"fielding","DP"),TP=sum(players,"fielding","TP");
+  const FPCT=(PO+A+E)>0?((PO+A)/(PO+A+E)):NaN;
+
+  return { totals:{hitting:{PA,AB,R,RBI,H,_1B,_2B,_3B,HR,BB,SO,HBP,SF,SAC,SB,CS},
+                   pitching:{IP,R:Rp,ER:ERp,H:Hpit,BB:BBpit,SO:SOpit,HR:HRpit,HBP:HBPpit,WP,BK},
+                   fielding:{TC,A,PO,E,DP,TP}},
+           kpi:{hitting:{AVG,OBP,SLG,OPS,ISO,BBpct,Kpct,SBpct:(SB+CS>0?SB/(SB+CS):NaN),SBApct,POlite,POenh},
+                pitching:{ERAx,RAx,WHIP,Kper,BBper,KBB},
+                fielding:{FPCT}} };
+}
+function perPlayerKPIs(players, eraBasis){
+  const hit=[],pit=[],fld=[];
+  for(const p of players){
+    const AB=numeric(p.batting?.AB), H=numeric(p.batting?.H), _2B=numeric(p.batting?.["2B"]), _3B=numeric(p.batting?.["3B"]), HR=numeric(p.batting?.HR),
+          BB=numeric(p.batting?.BB), SO=numeric(p.batting?.SO), HBP=numeric(p.batting?.HBP), SF=numeric(p.batting?.SF), SAC=numeric(p.batting?.SAC),
+          SB=numeric(p.batting?.SB), CS=numeric(p.batting?.CS);
+    let PA=numeric(p.batting?.PA); if(!PA) PA=AB+BB+HBP+SF+SAC;
+    const _1B=Math.max(0,H-_2B-_3B-HR);
+    const AVG=AB>0?H/AB:NaN, OBP=(AB+BB+HBP+SF)>0?(H+BB+HBP)/(AB+BB+HBP+SF):NaN, SLG=AB>0?(_1B+2*_2B+3*_3B+4*HR)/AB:NaN, OPS=isFinite(OBP)&&isFinite(SLG)?OBP+SLG:NaN, ISO=isFinite(SLG-AVG)?SLG-AVG:NaN;
+    const BBpct=PA>0?BB/PA:NaN, Kpct=PA>0?SO/PA:NaN, SBApct=(H+BB+HBP)>0?(SB+CS)/(H+BB+HBP):NaN, POlite=PA>0?(SAC+SF)/PA:NaN;
+    hit.push({num:p.number,last:p.last,first:p.first,PA,AB,H,_2B,_3B,HR,BB,SO,SB,CS,AVG,OBP,SLG,OPS,ISO,BBpct,Kpct,SBApct,POlite});
+
+    const IP=numeric(p.pitching?.IP), ER=numeric(p.pitching?.ER), R=numeric(p.pitching?.R), Hpit=numeric(p.pitching?.H), BBpit=numeric(p.pitching?.BB), SOpit=numeric(p.pitching?.SO), HRpit=numeric(p.pitching?.HR);
+    const ERAx=IP>0?(ER*eraBasis)/IP:NaN, WHIP=IP>0?(BBpit+Hpit)/IP:NaN, KBB=BBpit>0?(SOpit/BBpit):(SOpit>0?Infinity:NaN);
+    pit.push({num:p.number,last:p.last,first:p.first,IP,ER,R,H:Hpit,BB:BBpit,SO:SOpit,HR:HRpit,ERAx,WHIP,KBB});
+
+    const TC=numeric(p.fielding?.TC), A=numeric(p.fielding?.A), PO=numeric(p.fielding?.PO), E=numeric(p.fielding?.E);
+    const FPCT=(PO+A+E)>0?((PO+A)/(PO+A+E)):NaN;
+    fld.push({num:p.number,last:p.last,first:p.first,TC,A,PO,E,FPCT});
+  }
+  return {hit,pit,fld};
+}
+
+/* -------- tables, sorting, export -------- */
+function buildTable(elId, cols, rows){
+  const el=document.getElementById(elId);
+  const thead=`<thead><tr>${cols.map(c=>`<th data-key="${c.key}" data-type="${c.type||'num'}">${c.label}</th>`).join("")}</tr></thead>`;
+  const body=()=>rows.map(r=>`<tr>${cols.map(c=>{
+      const v=r[c.key];
+      if(c.type==='num'){ return `<td class="right">${isFinite(v)? (c.prec!=null? Number(v).toFixed(c.prec): v): (v===Infinity?'∞':'—')}</td>`; }
+      return `<td>${v??""}</td>`;
+    }).join("")}</tr>`).join("");
+  el.innerHTML=`<table class="ptable">${thead}<tbody>${body()}</tbody></table>`;
+  const ths=el.querySelectorAll("th"), tb=el.querySelector("tbody");
+  ths.forEach(th=>{
+    th.addEventListener("click", ()=>{
+      const key=th.dataset.key, type=th.dataset.type, asc=!(th.dataset.asc==="true");
+      rows.sort((a,b)=>{
+        const va=a[key], vb=b[key];
+        if(type==='num'){
+          const na=(va===Infinity?Number.POSITIVE_INFINITY:(isFinite(va)?Number(va):-1e99));
+          const nb=(vb===Infinity?Number.POSITIVE_INFINITY:(isFinite(vb)?Number(v):-1e99));
+          return asc? (na-nb) : (nb-na);
+        } else {
+          return asc? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+        }
+      });
+      ths.forEach(x=>x.dataset.asc=""); th.dataset.asc=String(asc);
+      tb.innerHTML=body();
+    });
+  });
+}
+function toCSV(cols, rows){
+  const header=cols.map(c=>`"${c.label.replace(/"/g,'""')}"`).join(",");
+  const lines=rows.map(r=>cols.map(c=>{
+    let v=r[c.key];
+    if(c.type==='num'){
+      if(v===Infinity) v="INF";
+      else if(!isFinite(v)) v="";
+      else if(c.prec!=null) v=Number(v).toFixed(c.prec);
+    }
+    return `"${String(v??"").replace(/"/g,'""')}"`;
+  }).join(","));
+  return [header,...lines].join("\r\n");
+}
+function download(name, content, mime){ const blob=new Blob([content],{type:mime||"text/plain"}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
+
+/* -------- flow -------- */
+let lastPlayers=null, lastJSONStr=null;
+
+function handlePlayersAndRender(players, filename){
+  lastPlayers=players;
+  const eraBasis=Number(document.getElementById('eraBasis').value)||7;
+  const isOur=document.getElementById('perspective').value==="our";
+  const poManual=isOur? Number(document.getElementById('poManual').value||0):0;
+
+  const team=calcTeam(players,eraBasis,poManual);
+  setTable("kpiHit",[["AVG",fmt(team.kpi.hitting.AVG,3)],["OBP",fmt(team.kpi.hitting.OBP,3)],["SLG",fmt(team.kpi.hitting.SLG,3)],["OPS",fmt(team.kpi.hitting.OPS,3)],["ISO",fmt(team.kpi.hitting.ISO,3)],["BB%",isFinite(team.kpi.hitting.BBpct)?(team.kpi.hitting.BBpct*100).toFixed(1)+"%":"—"],["K%",isFinite(team.kpi.hitting.Kpct)?(team.kpi.hitting.Kpct*100).toFixed(1)+"%":"—"],["SB%",isFinite(team.kpi.hitting.SBpct)?(team.kpi.hitting.SBpct*100).toFixed(1)+"%":"—"],["SBA% (Attempts per TOB)",isFinite(team.kpi.hitting.SBApct)?(team.kpi.hitting.SBApct*100).toFixed(1)+"%":"—"],["PO% (Lite)",isFinite(team.kpi.hitting.POlite)?(team.kpi.hitting.POlite*100).toFixed(1)+"%":"—"],["PO% (Enhanced, our team)",isOur&&isFinite(team.kpi.hitting.POenh)?(team.kpi.hitting.POenh*100).toFixed(1)+"%":"—"]]);
+  setTable("kpiPit",[[`ERA (per ${eraBasis})`,fmt(team.kpi.pitching.ERAx,2)],[`RA (per ${eraBasis})`,fmt(team.kpi.pitching.RAx,2)],["WHIP",fmt(team.kpi.pitching.WHIP,2)],["K/"+eraBasis,fmt(team.kpi.pitching.Kper,1)],["BB/"+eraBasis,fmt(team.kpi.pitching.BBper,1)],["K/BB",(team.kpi.pitching.KBB===Infinity)?"∞":fmt(team.kpi.pitching.KBB,2)]]);
+  setTable("kpiFld",[["FPCT",fmt(team.kpi.fielding.FPCT,3)],["Errors (E)",String(team.totals.fielding.E)],["Total Chances (TC)",String(team.totals.fielding.TC)],["Putouts (PO)",String(team.totals.fielding.PO)],["Assists (A)",String(team.totals.fielding.A)]]);
+  setTable("totHit",[["PA",team.totals.hitting.PA],["AB",team.totals.hitting.AB],["R",team.totals.hitting.R],["RBI",team.totals.hitting.RBI],["H",team.totals.hitting.H],["1B",team.totals.hitting._1B],["2B",team.totals.hitting._2B],["3B",team.totals.hitting._3B],["HR",team.totals.hitting.HR],["BB",team.totals.hitting.BB],["SO",team.totals.hitting.SO],["HBP",team.totals.hitting.HBP],["SF",team.totals.hitting.SF],["SAC",team.totals.hitting.SAC],["SB",team.totals.hitting.SB],["CS",team.totals.hitting.CS]]);
+  setTable("totPit",[["IP",fmt(team.totals.pitching.IP,2)],["R",team.totals.pitching.R],["ER",team.totals.pitching.ER],["H",team.totals.pitching.H],["BB",team.totals.pitching.BB],["SO",team.totals.pitching.SO],["HR",team.totals.pitching.HR],["HBP",team.totals.pitching.HBP],["WP",team.totals.pitching.WP],["BK",team.totals.pitching.BK]]);
+  setTable("totFld",[["TC",team.totals.fielding.TC],["PO",team.totals.fielding.PO],["A",team.totals.fielding.A],["E",team.totals.fielding.E],["DP",team.totals.fielding.DP],["TP",team.totals.fielding.TP]]);
+
+  const pp = (function(players, eraBasis){
+    const hit=[],pit=[],fld=[];
+    for(const p of players){
+      const AB=numeric(p.batting?.AB), H=numeric(p.batting?.H), _2B=numeric(p.batting?.["2B"]), _3B=numeric(p.batting?.["3B"]), HR=numeric(p.batting?.HR),
+            BB=numeric(p.batting?.BB), SO=numeric(p.batting?.SO), HBP=numeric(p.batting?.HBP), SF=numeric(p.batting?.SF), SAC=numeric(p.batting?.SAC),
+            SB=numeric(p.batting?.SB), CS=numeric(p.batting?.CS);
+      let PA=numeric(p.batting?.PA); if(!PA) PA=AB+BB+HBP+SF+SAC;
+      const _1B=Math.max(0,H-_2B-_3B-HR);
+      const AVG=AB>0?H/AB:NaN, OBP=(AB+BB+HBP+SF)>0?(H+BB+HBP)/(AB+BB+HBP+SF):NaN, SLG=AB>0?(_1B+2*_2B+3*_3B+4*HR)/AB:NaN, OPS=isFinite(OBP)&&isFinite(SLG)?OBP+SLG:NaN, ISO=isFinite(SLG-AVG)?SLG-AVG:NaN;
+      const BBpct=PA>0?BB/PA:NaN, Kpct=PA>0?SO/PA:NaN, SBApct=(H+BB+HBP)>0?(SB+CS)/(H+BB+HBP):NaN, POlite=PA>0?(SAC+SF)/PA:NaN;
+      hit.push({num:p.number,last:p.last,first:p.first,PA,AB,H,_2B,_3B,HR,BB,SO,SB,CS,AVG,OBP,SLG,OPS,ISO,BBpct,Kpct,SBApct,POlite});
+
+      const IP=numeric(p.pitching?.IP), ER=numeric(p.pitching?.ER), R=numeric(p.pitching?.R), Hpit=numeric(p.pitching?.H), BBpit=numeric(p.pitching?.BB), SOpit=numeric(p.pitching?.SO), HRpit=numeric(p.pitching?.HR);
+      const ERAx=IP>0?(ER*eraBasis)/IP:NaN, WHIP=IP>0?(BBpit+Hpit)/IP:NaN, KBB=BBpit>0?(SOpit/BBpit):(SOpit>0?Infinity:NaN);
+      pit.push({num:p.number,last:p.last,first:p.first,IP,ER,R,H:Hpit,BB:BBpit,SO:SOpit,HR:HRpit,ERAx,WHIP,KBB});
+
+      const TC=numeric(p.fielding?.TC), A=numeric(p.fielding?.A), PO=numeric(p.fielding?.PO), E=numeric(p.fielding?.E);
+      const FPCT=(PO+A+E)>0?((PO+A)/(PO+A+E)):NaN;
+      fld.push({num:p.number,last:p.last,first:p.first,TC,A,PO,E,FPCT});
+    }
+    return {hit,pit,fld};
+  })(players, eraBasis);
+
+  const hitCols=[{key:"num",label:"#",type:"str"},{key:"last",label:"Last",type:"str"},{key:"first",label:"First",type:"str"},{key:"PA",label:"PA",type:"num"},{key:"AB",label:"AB",type:"num"},{key:"H",label:"H",type:"num"},{key:"_2B",label:"2B",type:"num"},{key:"_3B",label:"3B",type:"num"},{key:"HR",label:"HR",type:"num"},{key:"BB",label:"BB",type:"num"},{key:"SO",label:"SO",type:"num"},{key:"SB",label:"SB",type:"num"},{key:"CS",label:"CS",type:"num"},{key:"AVG",label:"AVG",type:"num",prec:3},{key:"OBP",label:"OBP",type:"num",prec:3},{key:"SLG",label:"SLG",type:"num",prec:3},{key:"OPS",label:"OPS",type:"num",prec:3},{key:"ISO",label:"ISO",type:"num",prec:3},{key:"BBpct",label:"BB%",type:"num",prec:3},{key:"Kpct",label:"K%",type:"num",prec:3},{key:"SBApct",label:"SBA%",type:"num",prec:3},{key:"POlite",label:"PO% (lite)",type:"num",prec:3}];
+  const pitCols=[{key:"num",label:"#",type:"str"},{key:"last",label:"Last",type:"str"},{key:"first",label:"First",type:"str"},{key:"IP",label:"IP",type:"num",prec:2},{key:"ER",label:"ER",type:"num"},{key:"R",label:"R",type:"num"},{key:"H",label:"H",type:"num"},{key:"BB",label:"BB",type:"num"},{key:"SO",label:"SO",type:"num"},{key:"HR",label:"HR",type:"num"},{key:"ERAx",label:`ERA/${eraBasis}`,type:"num",prec:2},{key:"WHIP",label:"WHIP",type:"num",prec:2},{key:"KBB",label:"K/BB",type:"num",prec:2}];
+  const fldCols=[{key:"num",label:"#",type:"str"},{key:"last",label:"Last",type:"str"},{key:"first",label:"First",type:"str"},{key:"TC",label:"TC",type:"num"},{key:"A",label:"A",type:"num"},{key:"PO",label:"PO",type:"num"},{key:"E",label:"E",type:"num"},{key:"FPCT",label:"FPCT",type:"num",prec:3}];
+
+  function buildTable(elId, cols, rows){ const el=document.getElementById(elId); const thead=`<thead><tr>${cols.map(c=>`<th data-key="${c.key}" data-type="${c.type||'num'}">${c.label}</th>`).join("")}</tr></thead>`; const tbody=()=>rows.map(r=>`<tr>${cols.map(c=>{ const v=r[c.key]; if(c.type==='num'){ return `<td class="right">${isFinite(v)?(c.prec!=null?Number(v).toFixed(c.prec):v):(v===Infinity?'∞':'—')}</td>`;} return `<td>${v??""}</td>`; }).join("")}</tr>`).join(""); el.innerHTML=`<table class="ptable">${thead}<tbody>${tbody()}</tbody></table>`; const ths=el.querySelectorAll("th"), tb=el.querySelector("tbody"); ths.forEach(th=>{ th.addEventListener("click", ()=>{ const key=th.dataset.key, type=th.dataset.type, asc=!(th.dataset.asc==="true"); rows.sort((a,b)=>{ const va=a[key], vb=b[key]; if(type==='num'){ const na=(va===Infinity?Number.POSITIVE_INFINITY:(isFinite(va)?Number(va):-1e99)); const nb=(vb===Infinity?Number.POSITIVE_INFINITY:(isFinite(vb)?Number(vb):-1e99)); return asc?(na-nb):(nb-na);} return asc? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va)); }); ths.forEach(x=>x.dataset.asc=""); th.dataset.asc=String(asc); tb.innerHTML=tbody(); }); }); }
+  buildTable("tblHitKPIs",hitCols,pp.hit);
+  buildTable("tblPitKPIs",pitCols,pp.pit);
+  buildTable("tblFldKPIs",fldCols,pp.fld);
+
+  document.getElementById('exportHitCSV').disabled=false;
+  document.getElementById('exportPitCSV').disabled=false;
+  document.getElementById('exportFldCSV').disabled=false;
+  document.getElementById('exportHitCSV').onclick=()=>download("player_hitting_kpis.csv", toCSV(hitCols,pp.hit),"text/csv");
+  document.getElementById('exportPitCSV').onclick=()=>download("player_pitching_kpis.csv", toCSV(pitCols,pp.pit),"text/csv");
+  document.getElementById('exportFldCSV').onclick=()=>download("player_fielding_kpis.csv", toCSV(fldCols,pp.fld),"text/csv");
+
+  const mode=document.getElementById('mode').value;
+  const exportPlayers=(mode==="lean")? toLean(players) : toFull(players);
+  lastJSONStr=JSON.stringify({source:filename||"dropped",schema:"bay-conference.v1",players:exportPlayers}, null, 2);
+  document.getElementById('downloadJson').disabled=true===false;
+
+  const prev=players.slice(0,2).map(p=>`${p.number||""} ${p.last||""}, ${p.first||""} | AB=${numeric(p.batting?.AB)} H=${numeric(p.batting?.H)} | IP=${numeric(p.pitching?.IP)} SO=${numeric(p.pitching?.SO)}`).join("\n");
+  document.getElementById('preview').textContent=prev||"—";
+}
+
+function handleCSV(text, filename){ const table=parseCSV(text); if(!table){ document.getElementById('diag').textContent="Header not found (CSV)."; return; } document.getElementById('diag').textContent=`Detected delimiter: ${JSON.stringify(table.delim)} | Header columns: ${table.header.length} | Rows: ${table.rows.length}`; document.getElementById('headers').textContent=table.header.join(" | "); const players=normalizePlayersFromCSV(table); handlePlayersAndRender(players, filename); }
+function handleJSON(text, filename){ try{ const obj=JSON.parse(text); const players=normalizePlayersFromJSON(obj); document.getElementById('diag').textContent=`Loaded JSON: ${players.length} players`; document.getElementById('headers').textContent="— (JSON input)"; handlePlayersAndRender(players, filename); }catch(e){ document.getElementById('diag').textContent="Invalid JSON."; } }
+
+/* wiring */
+function readFile(file){ const r=new FileReader(); r.onload=()=>{ const txt=String(r.result||""); const first=txt.trim().slice(0,1); if(first==="{"||first==="[") handleJSON(txt,file.name); else handleCSV(txt,file.name); }; r.readAsText(file); }
+document.getElementById('file').addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f) readFile(f); });
+const drop=document.getElementById('drop'); drop.addEventListener('dragover', e=>{ e.preventDefault(); drop.classList.add('drag'); }); drop.addEventListener('dragleave', ()=> drop.classList.remove('drag')); drop.addEventListener('drop', e=>{ e.preventDefault(); drop.classList.remove('drag'); const f=e.dataTransfer.files?.[0]; if(f) readFile(f); });
+
+document.getElementById('downloadJson').addEventListener('click', ()=>{ if(!lastJSONStr){ alert("No JSON to download yet."); return; } download("team_stats.json", lastJSONStr, "application/json"); });
+document.getElementById('perspective').addEventListener('change', ()=>{ document.getElementById('poWrap').style.display = (document.getElementById('perspective').value==='our') ? 'block' : 'none'; });
+</script>
+</body>
+</html>
